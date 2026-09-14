@@ -68,7 +68,8 @@ export const MODELS: Record<ModelRole, ModelSpec> = {
   },
 };
 
-export const modelPath = (role: ModelRole) => `${MODEL_DIR}/${MODELS[role].file}`;
+export const modelPath = (role: ModelRole) =>
+  `${MODEL_DIR}/${MODELS[role].file}`;
 
 /**
  * Dosya var mı ve boyutu makul mü? Yarım kalmış indirmeler
@@ -134,5 +135,3 @@ export async function ensureModel(
 
   return path;
 }
-
-export const formatMB = (bytes: number) => `${(bytes / 1024 / 1024).toFixed(0)} MB`;

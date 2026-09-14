@@ -7,12 +7,12 @@
  *                modeline veriyor, kelimeler konuşurken ekrana düşüyor.
  *   2. DÜZELTME — aynı akış `audioOutputPath` ile WAV olarak diske de
  *                yazılıyor. Kayıt bitince bu WAV daha büyük "small"
- *                modeliyle baştan çevriliyor ve canlı metnin yerini alıyor.
+ *                modeliyle baştan çevriliyor.
  *
- * İkinci bir mikrofon açmaya gerek yok; ses tek kaynaktan geliyor.
+ * WAV dosyası silinmiyor: günlük kaydının ses tarafı o dosya.
  * Hiçbir aşamada ses cihazdan çıkmıyor.
  */
-import {useCallback, useEffect, useRef, useState} from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   initWhisper,
   initWhisperVad,
@@ -27,12 +27,10 @@ import {
   RealtimeTranscriber,
   RingBufferVad,
 } from 'whisper.rn/realtime-transcription/index';
-import {AudioPcmStreamAdapter} from 'whisper.rn/realtime-transcription/adapters/AudioPcmStreamAdapter';
+import { AudioPcmStreamAdapter } from 'whisper.rn/realtime-transcription/adapters/AudioPcmStreamAdapter';
 import {
-  DocumentDirectoryPath,
   appendFile,
   exists,
-  mkdir,
   readFile,
   unlink,
   writeFile,
@@ -44,6 +42,7 @@ import {
   type DownloadProgress,
   type ModelRole,
 } from './models';
+import { SES_DIZINI, hazirla, yeniSesAdi, type Entry } from './entries';
 
 /** whisper.rn'in WavFileWriter'ının beklediği dar fs arayüzü. */
 const fsAdapter = {
@@ -56,8 +55,6 @@ const fsAdapter = {
   unlink,
 };
 
-const RECORDING_DIR = `${DocumentDirectoryPath}/kayitlar`;
-
 export type Phase =
   | 'hazirlaniyor' // modeller indiriliyor / belleğe yükleniyor
   | 'hazir'
@@ -65,10 +62,12 @@ export type Phase =
   | 'duzeltiliyor' // kayıt bitti, small model çalışıyor
   | 'hata';
 
+/** Kayıt bitince üretilen, günlüğe yazılmaya hazır veri. */
+export type KayitSonucu = Omit<Entry, 'isEdited'>;
+
 export function useDictation() {
   const [phase, setPhase] = useState<Phase>('hazirlaniyor');
   const [liveText, setLiveText] = useState('');
-  const [finalText, setFinalText] = useState('');
   const [konusuyor, setKonusuyor] = useState(false);
   const [hazirlikMesaji, setHazirlikMesaji] = useState('Başlatılıyor…');
   const [indirme, setIndirme] = useState<DownloadProgress | null>(null);
@@ -79,7 +78,8 @@ export function useDictation() {
   const finalCtx = useRef<WhisperContext | null>(null);
   const vadCtx = useRef<WhisperVadContext | null>(null);
   const transcriber = useRef<RealtimeTranscriber | null>(null);
-  const wavPath = useRef<string | null>(null);
+  const sesAdi = useRef<string | null>(null);
+  const baslangic = useRef<number>(0);
 
   /**
    * Her dilim yeniden çevrildikçe metni tazeleniyor, bu yüzden dilim
@@ -104,9 +104,7 @@ export function useDictation() {
         const indir = async (role: ModelRole, etiket: string) => {
           setHazirlikMesaji(etiket);
           await ensureModel(role, p => {
-            if (!iptal) {
-              setIndirme(p);
-            }
+            if (!iptal) setIndirme(p);
           });
           setIndirme(null);
         };
@@ -115,9 +113,7 @@ export function useDictation() {
         // düzeltmeye kadar bekletiyoruz ki uygulama daha çabuk açılsın.
         await indir('vad', 'Konuşma algılayıcı indiriliyor…');
         await indir('live', 'Canlı model indiriliyor…');
-        if (iptal) {
-          return;
-        }
+        if (iptal) return;
 
         setHazirlikMesaji('Model belleğe yükleniyor…');
         vadCtx.current = await initWhisperVad({
@@ -130,17 +126,13 @@ export function useDictation() {
           useGpu: true,
           useCoreMLIos: true,
         });
-        if (iptal) {
-          return;
-        }
+        if (iptal) return;
 
-        await mkdir(RECORDING_DIR);
+        await hazirla();
         setPhase('hazir');
         setHazirlikMesaji('');
       } catch (e: any) {
-        if (iptal) {
-          return;
-        }
+        if (iptal) return;
         setHata(e?.message ?? String(e));
         setPhase('hata');
       }
@@ -157,26 +149,25 @@ export function useDictation() {
 
   // --- Kayıt süresi sayacı ----------------------------------------------
   useEffect(() => {
-    if (phase !== 'kayitta') {
-      return;
-    }
-    const t = setInterval(() => setSureSn(s => s + 1), 1000);
+    if (phase !== 'kayitta') return;
+    const t = setInterval(
+      () => setSureSn(Math.round((Date.now() - baslangic.current) / 1000)),
+      500,
+    );
     return () => clearInterval(t);
   }, [phase]);
 
   const basla = useCallback(async () => {
-    if (phase !== 'hazir' || !liveCtx.current || !vadCtx.current) {
-      return;
-    }
+    if (phase !== 'hazir' || !liveCtx.current || !vadCtx.current) return;
 
     slices.current.clear();
     setLiveText('');
-    setFinalText('');
     setHata(null);
     setSureSn(0);
+    baslangic.current = Date.now();
 
-    const path = `${RECORDING_DIR}/kayit-${Date.now()}.wav`;
-    wavPath.current = path;
+    const ad = yeniSesAdi();
+    sesAdi.current = ad;
 
     transcriber.current = new RealtimeTranscriber(
       {
@@ -194,7 +185,7 @@ export function useDictation() {
         audioSliceSec: 30,
         audioMinSec: 1,
         maxSlicesInMemory: 3,
-        audioOutputPath: path,
+        audioOutputPath: `${SES_DIZINI}/${ad}`,
         transcribeOptions: {
           language: 'tr',
           // Canlı tarafta hız önemli: greedy decode, tek geçiş.
@@ -221,7 +212,9 @@ export function useDictation() {
           }
         },
         onVad: ev =>
-          setKonusuyor(ev.type === 'speech_start' || ev.type === 'speech_continue'),
+          setKonusuyor(
+            ev.type === 'speech_start' || ev.type === 'speech_continue',
+          ),
         onError: e => setHata(e),
       },
     );
@@ -230,68 +223,90 @@ export function useDictation() {
     setPhase('kayitta');
   }, [phase]);
 
-  const bitir = useCallback(async () => {
-    if (phase !== 'kayitta') {
-      return;
-    }
+  /**
+   * Kaydı bitirir, düzeltme geçişini çalıştırır ve günlüğe yazılmaya
+   * hazır kaydı döndürür. Konuşma hiç algılanmadıysa null döner.
+   */
+  const bitir = useCallback(async (): Promise<KayitSonucu | null> => {
+    if (phase !== 'kayitta') return null;
 
+    const gecenSn = Math.round((Date.now() - baslangic.current) / 1000);
     await transcriber.current?.stop();
     transcriber.current = null;
     setKonusuyor(false);
+
+    const ad = sesAdi.current;
+    const canli = birlestir();
+    const yol = ad ? `${SES_DIZINI}/${ad}` : null;
+    const sesVar = !!yol && (await exists(yol));
+
     setPhase('duzeltiliyor');
 
+    let metin = canli;
+    let duzeltildi = false;
+
     try {
-      const path = wavPath.current;
-      if (!path || !(await exists(path))) {
-        // Ses dosyası yoksa elimizdeki tek şey canlı metin.
-        setPhase('hazir');
-        return;
-      }
+      if (sesVar) {
+        if (!finalCtx.current) {
+          setHazirlikMesaji('Düzeltme modeli hazırlanıyor…');
+          await ensureModel('final', setIndirme);
+          setIndirme(null);
+          finalCtx.current = await initWhisper({
+            filePath: modelPath('final'),
+            useGpu: true,
+            useCoreMLIos: true,
+          });
+          setHazirlikMesaji('');
+        }
 
-      if (!finalCtx.current) {
-        setHazirlikMesaji('Düzeltme modeli hazırlanıyor…');
-        await ensureModel('final', setIndirme);
-        setIndirme(null);
-        finalCtx.current = await initWhisper({
-          filePath: modelPath('final'),
-          useGpu: true,
-          useCoreMLIos: true,
+        const { promise } = finalCtx.current.transcribe(yol!, {
+          language: 'tr',
+          // Burada doğruluk önemli: beam search + sıcaklık geri çekilmesi.
+          beamSize: 5,
+          bestOf: 5,
+          temperature: 0,
+          temperatureInc: 0.2,
+          maxThreads: 4,
         });
-        setHazirlikMesaji('');
+        const { result } = await promise;
+        const temiz = result.trim();
+        if (temiz) {
+          metin = temiz;
+          duzeltildi = true;
+        }
       }
-
-      const {promise} = finalCtx.current.transcribe(path, {
-        language: 'tr',
-        // Burada doğruluk önemli: beam search + sıcaklık geri çekilmesi.
-        beamSize: 5,
-        bestOf: 5,
-        temperature: 0,
-        temperatureInc: 0.2,
-        maxThreads: 4,
-      });
-      const {result} = await promise;
-      setFinalText(result.trim());
     } catch (e: any) {
+      // Düzeltme başarısız olsa bile canlı metni kaybetmeyelim.
       setHata(e?.message ?? String(e));
     } finally {
       setHazirlikMesaji('');
       setPhase('hazir');
     }
+
+    // Ne ses ne metin varsa kaydedecek bir şey yok.
+    if (!metin && !sesVar) return null;
+
+    return {
+      id: `${baslangic.current}`,
+      createdAt: baslangic.current,
+      text: metin,
+      liveText: canli,
+      isCorrected: duzeltildi,
+      audioFile: sesVar ? ad : null,
+      durationSec: gecenSn,
+    };
   }, [phase]);
 
+  /** Kayda başlamadan ekranı temizler. */
   const temizle = useCallback(() => {
     slices.current.clear();
     setLiveText('');
-    setFinalText('');
     setSureSn(0);
   }, []);
 
   return {
     phase,
     liveText,
-    finalText,
-    /** Kullanıcıya gösterilecek en iyi metin. */
-    displayText: finalText || liveText,
     konusuyor,
     hazirlikMesaji,
     indirme,

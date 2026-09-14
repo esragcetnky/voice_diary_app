@@ -1,8 +1,10 @@
-# SesYazi — çevrimdışı Türkçe dikte (iOS)
+# SesYazi — çevrimdışı Türkçe sesli günlük (iOS)
 
-Söylediklerinizi telefonun içinde yazıya çeviren React Native uygulaması.
-Ses hiçbir aşamada internete gitmez; tüm çeviri cihaz üstünde, açık kaynak
-Whisper modelleriyle yapılır.
+Konuşarak günlük tutmanızı sağlayan React Native uygulaması. Her kayıt
+**hem ses hem metin** olarak saklanır. Ses hiçbir aşamada internete
+gitmez; tüm çeviri cihaz üstünde, açık kaynak Whisper modelleriyle yapılır.
+
+## Nasıl çalışır
 
 İki mod aynı anda çalışır:
 
@@ -13,7 +15,32 @@ Whisper modelleriyle yapılır.
 
 Tek mikrofon açılışı kullanılır: `RealtimeTranscriber` sesi hem VAD ile
 dilimleyip canlı modele verir, hem de `audioOutputPath` ile WAV olarak
-diske yazar. Kayıt bitince bu WAV düzeltme modeline gider.
+diske yazar. Kayıt bitince bu WAV düzeltme modeline gider ve sonuç
+otomatik olarak günlüğe kaydedilir.
+
+## Ekranlar
+
+- **Kayıt** — mikrofon, canlı metin, konuşma algılama göstergesi
+- **Günlüğüm** — kayıtlar güne göre gruplanmış, metin içinde arama
+- **Detay** — sesi dinle (kaydırmalı ilerleme çubuğu), metni düzenle,
+  kopyala, sil; canlı modun ham metnini düzeltilmiş hâliyle karşılaştır
+
+## Veri nerede duruyor
+
+| Ne | Nerede |
+|---|---|
+| Metinler | `Documents/gunluk.json` |
+| Ses kayıtları | `Documents/kayitlar/kayit-<zaman>.wav` |
+| Modeller | `Documents/models/` |
+
+> **Tasarım notu:** Kayıtta ses dosyasının **tam yolu değil, yalnızca adı**
+> tutulur. iOS'ta uygulama konteynerinin UUID'si her yeniden kurulumda
+> değişir — Sideloadly ile 7 günde bir yeniden imzalarken de. Tam yol
+> saklansaydı her yenilemeden sonra bütün sesler kayıp görünürdü.
+> Yol, okuma anında `sesYolu()` ile üretilir.
+
+Hiçbir veri dışarı gönderilmez ve uygulama silinirse hepsi silinir —
+yedekleme yoktur.
 
 ---
 
@@ -113,11 +140,21 @@ npx react-native bundle --platform ios --dev false `
 
 | Dosya | İşi |
 |---|---|
-| [`SesYazi/src/models.ts`](SesYazi/src/models.ts) | Model kaydı, indirme, boyut doğrulama |
-| [`SesYazi/src/useDictation.ts`](SesYazi/src/useDictation.ts) | Canlı akış + düzeltme geçişi |
-| [`SesYazi/App.tsx`](SesYazi/App.tsx) | Arayüz |
+| [`src/models.ts`](SesYazi/src/models.ts) | Model kaydı, indirme, boyut doğrulama |
+| [`src/useDictation.ts`](SesYazi/src/useDictation.ts) | Canlı akış + düzeltme geçişi |
+| [`src/entries.ts`](SesYazi/src/entries.ts) | Günlük kayıtlarının saklanması |
+| [`src/usePlayer.ts`](SesYazi/src/usePlayer.ts) | WAV oynatıcı |
+| [`src/format.ts`](SesYazi/src/format.ts) | Türkçe tarih/süre biçimlendirme |
+| [`src/theme.ts`](SesYazi/src/theme.ts) | Renk paleti, tipografi ölçeği |
+| [`src/screens/`](SesYazi/src/screens/) | Kayıt, liste ve detay ekranları |
+| [`App.tsx`](SesYazi/App.tsx) | Kabuk ve ekran yönlendirmesi |
 | [`.github/workflows/build-ios.yml`](.github/workflows/build-ios.yml) | Bulutta IPA derleme |
 | [`.github/workflows/convert-model.yml`](.github/workflows/convert-model.yml) | HF → GGML dönüştürme |
+
+Ekran geçişleri için navigasyon kütüphanesi kullanılmıyor — üç ekran için
+`App.tsx` içinde basit bir durum makinesi yetiyor ve üç native bağımlılık
+(`react-native-screens`, `safe-area-context`, navigasyon) eklemekten
+kurtarıyor. Her native bağımlılık bulut derlemesinde risk demek.
 
 ### Bilinen tuhaflık: `/index` soneki
 
@@ -135,6 +172,27 @@ desen `src/realtime-transcription/index.ts`'e denk geliyor.
 
 Aynı sebeple `tsconfig.json` içinde `paths` eşlemesi var — `tsc`'nin
 Metro gibi bir geri düşüşü olmadığı için tipleri elle yönlendiriyoruz.
+
+---
+
+## Sorun giderme
+
+**Derleme `RNAudioPcmStream` sembollerini bulamıyor.**
+`@fugood/react-native-audio-pcm-stream` podspec'i kaynakları `iOS/*.{h,m}`
+diye arıyor, ama paketteki klasörün adı küçük harfle `ios`. GitHub'ın
+macOS runner'ları büyük/küçük harf duyarsız dosya sistemi kullandığı için
+normalde sorun çıkmaz. Duyarlı bir diskte derliyorsanız klasörü
+`iOS` olarak yeniden adlandırın veya podspec'i düzeltin.
+
+**Uygulama açılışta modeli indirirken takılıyor.**
+Yarım kalan dosya `isModelReady()` boyut kontrolüne takılır ve bir sonraki
+açılışta baştan indirilir. Elle temizlemek için uygulamayı silip yeniden
+kurun.
+
+**Canlı metin geliyor ama düzeltme adımı çok uzun sürüyor.**
+İlk düzeltmede `small` modeli indirilip belleğe yükleniyor; sonraki
+kayıtlarda bu adım atlanır. Hâlâ yavaşsa `models.ts` içinde düzeltme
+modelini `base`'e çekin.
 
 ---
 
