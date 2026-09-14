@@ -1,0 +1,102 @@
+name: Türkçe modeli GGML'e dönüştür
+
+# Bu iş akışı bir HuggingFace Whisper fine-tune'unu whisper.cpp'nin
+# kullandığı GGML formatına çevirir ve quantize eder.
+# Yerel makinede C++ derleyici / torch kurmaya gerek yok.
+# Actions sekmesinden "Run workflow" ile elle çalıştırılır.
+
+on:
+  workflow_dispatch:
+    inputs:
+      hf_repo:
+        description: 'HuggingFace model deposu'
+        required: true
+        default: 'ysdede/whisper-base-turkish-1.1'
+      quantization:
+        description: 'Quantization tipi (q5_1 önerilir, f16 = quantize yok)'
+        required: true
+        default: 'q5_1'
+        type: choice
+        options: [q5_1, q8_0, q4_0, f16]
+      output_name:
+        description: 'Üretilecek dosya adı (uzantısız)'
+        required: true
+        default: 'ggml-base-tr'
+
+jobs:
+  convert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: whisper.cpp deposunu al
+        run: git clone --depth 1 https://github.com/ggml-org/whisper.cpp.git
+
+      - name: Python bağımlılıkları
+        run: |
+          pip install --upgrade pip
+          pip install torch --index-url https://download.pytorch.org/whl/cpu
+          pip install transformers huggingface_hub numpy
+
+      - name: Fine-tune modelini indir
+        run: |
+          python - <<'PY'
+          import os
+          from huggingface_hub import snapshot_download
+          p = snapshot_download(
+              repo_id=os.environ['HF_REPO'],
+              local_dir='hf-model',
+              # eğitim logları ve optimizer state'i gereksiz, atla
+              ignore_patterns=['runs/*', '*.msgpack', '*.h5', 'training_args.bin', 'optimizer.pt'],
+          )
+          print('indirildi ->', p)
+          PY
+        env:
+          HF_REPO: ${{ inputs.hf_repo }}
+
+      - name: OpenAI Whisper varlıklarını al
+        # convert-h5-to-ggml.py mel filtrelerini ve tokenizer'ı
+        # orijinal openai/whisper paketinden okur
+        run: |
+          pip install openai-whisper
+          python -c "import whisper, os; print(os.path.dirname(whisper.__file__))" > whisper_path.txt
+          cat whisper_path.txt
+
+      - name: GGML'e çevir (f16)
+        run: |
+          WHISPER_ASSETS=$(cat whisper_path.txt)
+          mkdir -p out
+          python whisper.cpp/models/convert-h5-to-ggml.py \
+            hf-model/ "$WHISPER_ASSETS" out/
+          ls -lh out/
+          mv out/ggml-model.bin out/${{ inputs.output_name }}-f16.bin
+          ls -lh out/
+
+      - name: quantize aracını derle
+        if: ${{ inputs.quantization != 'f16' }}
+        run: |
+          cd whisper.cpp
+          cmake -B build -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release --target quantize -j$(nproc)
+          find build -name "quantize*" -type f
+
+      - name: Quantize et
+        if: ${{ inputs.quantization != 'f16' }}
+        run: |
+          QUANT_BIN=$(find whisper.cpp/build -name "quantize" -type f | head -1)
+          "$QUANT_BIN" \
+            out/${{ inputs.output_name }}-f16.bin \
+            out/${{ inputs.output_name }}-${{ inputs.quantization }}.bin \
+            ${{ inputs.quantization }}
+          rm out/${{ inputs.output_name }}-f16.bin
+          ls -lh out/
+
+      - name: Modeli artifact olarak yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.output_name }}-${{ inputs.quantization }}
+          path: out/*.bin
+          retention-days: 30
+          compression-level: 0   # .bin zaten sıkışmıyor, zaman kaybetme

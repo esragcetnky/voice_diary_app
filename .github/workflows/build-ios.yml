@@ -1,0 +1,73 @@
+name: iOS derle (imzasız IPA)
+
+# Windows'ta Mac olmadığı için IPA'yı GitHub'ın ücretsiz macOS runner'ında
+# üretiyoruz. Çıkan imzasız .ipa dosyasını indirip Sideloadly ile
+# kendi Apple ID'nizle imzalayıp telefona kuruyorsunuz.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'scripts/**']
+
+jobs:
+  build:
+    runs-on: macos-15
+    defaults:
+      run:
+        working-directory: SesYazi
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: SesYazi/package-lock.json
+
+      - name: JS bağımlılıkları
+        run: npm ci
+
+      - name: CocoaPods önbelleği
+        uses: actions/cache@v4
+        with:
+          path: SesYazi/ios/Pods
+          key: pods-${{ hashFiles('SesYazi/ios/Podfile.lock') }}
+          restore-keys: pods-
+
+      - name: Pod kurulumu
+        run: |
+          cd ios
+          pod install --repo-update
+
+      - name: Xcode ile derle (imzasız)
+        run: |
+          cd ios
+          xcodebuild \
+            -workspace SesYazi.xcworkspace \
+            -scheme SesYazi \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build \
+            -destination 'generic/platform=iOS' \
+            CODE_SIGN_IDENTITY="" \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            ONLY_ACTIVE_ARCH=NO \
+            | xcpretty || exit ${PIPESTATUS[0]}
+
+      - name: .ipa paketle
+        run: |
+          cd ios/build/Build/Products/Release-iphoneos
+          mkdir -p Payload
+          cp -r SesYazi.app Payload/
+          zip -qr SesYazi.ipa Payload
+          ls -lh SesYazi.ipa
+
+      - name: IPA'yı yükle
+        uses: actions/upload-artifact@v4
+        with:
+          name: SesYazi-ipa
+          path: SesYazi/ios/build/Build/Products/Release-iphoneos/SesYazi.ipa
+          retention-days: 30

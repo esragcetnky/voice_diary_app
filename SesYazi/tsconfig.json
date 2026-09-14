@@ -1,0 +1,23 @@
+{
+  "extends": "@react-native/typescript-config",
+  "compilerOptions": {
+    // whisper.rn'in package.json "exports" haritasında "." girdisi yok ve
+    // "./*/" deseni TypeScript'in desteklemediği bir biçim. Metro çalışma
+    // anında dosya tabanlı çözümlemeye geri düştüğü için uygulama çalışıyor
+    // (metro-resolver/src/resolve.js), ama tsc'nin böyle bir geri düşüşü yok.
+    // Tipleri paketin yayınladığı .d.ts dosyalarına elle yönlendiriyoruz;
+    // bu aynı zamanda tsc'nin kütüphanenin src/*.ts kaynağını denetlemesini
+    // de engelliyor.
+    "paths": {
+      "whisper.rn": ["./node_modules/whisper.rn/lib/typescript/index.d.ts"],
+      "whisper.rn/realtime-transcription/index": [
+        "./node_modules/whisper.rn/lib/typescript/realtime-transcription/index.d.ts"
+      ],
+      "whisper.rn/realtime-transcription/adapters/*": [
+        "./node_modules/whisper.rn/lib/typescript/realtime-transcription/adapters/*"
+      ]
+    }
+  },
+  "include": ["**/*.ts", "**/*.tsx"],
+  "exclude": ["**/node_modules", "**/Pods"]
+}

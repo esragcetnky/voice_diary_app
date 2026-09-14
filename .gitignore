@@ -1,0 +1,12 @@
+node_modules/
+*.log
+.DS_Store
+
+# iOS derleme çıktıları
+SesYazi/ios/Pods/
+SesYazi/ios/build/
+*.ipa
+*.xcuserstate
+
+# İndirilen / dönüştürülen modeller depoya girmesin
+*.bin
